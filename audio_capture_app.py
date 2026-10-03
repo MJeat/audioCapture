@@ -6,6 +6,7 @@ import os
 import re
 import signal
 import time
+import warnings
 from pathlib import Path
 from threading import Event, Lock
 from typing import Optional
@@ -21,6 +22,21 @@ CHANNELS = 2
 PROJECT_DIR = Path(__file__).resolve().parent
 AUDIO_DIR = PROJECT_DIR / "audios"
 TRANSCRIPT_DIR = PROJECT_DIR / "transcripts"
+
+# Whisper downloads public models through Hugging Face. These messages are
+# informational on Windows and do not indicate a capture or transcription error.
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("HF_HUB_VERBOSITY", "error")
+warnings.filterwarnings(
+    "ignore",
+    message=".*cache-system uses symlinks.*",
+    module="huggingface_hub",
+)
+warnings.filterwarnings(
+    "ignore",
+    message=".*unauthenticated requests to the HF Hub.*",
+    module="huggingface_hub",
+)
 
 
 def find_process_ids(search_text: str) -> list[int]:
