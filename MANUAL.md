@@ -12,31 +12,30 @@ The app captures application audio only. It does not play the captured recording
 ## Requirements
 
 - Windows 10 or later
-- Python 3.14 or a compatible Python version
+- Anaconda/conda with Python 3.14.6
 - An application currently playing audio
 - The dependencies in [requirements.txt](./requirements.txt)
 
-Install the dependencies from the project folder:
+## Recommended: run from Jupyter
+
+Open [main.ipynb](./main.ipynb) in VS Code or Jupyter while the conda `base` kernel is selected. Run the setup cell first. It installs the dependencies into the active conda kernel and prints the interpreter being used.
+
+Then run the GUI launcher cell. The GUI opens in its own window while the notebook remains available for process inspection and direct core-module experiments.
+
+No virtual environment or `venv` folder is required.
+
+## Optional command-line launch
+
+The Python files remain reusable implementation modules. If you do launch them directly, use the same conda interpreter:
 
 ```powershell
-python -m pip install -r requirements.txt
-```
-
-If `python` is not the Python interpreter used by VS Code, use the full interpreter path:
-
-```powershell
-C:\Python314\python.exe -m pip install -r requirements.txt
-```
-
-## Option 1: Use the GUI
-
-Start the GUI:
-
-```powershell
+conda activate base
 python audio_capture_gui.py
 ```
 
-You can also open [audio_capture_gui.py](./audio_capture_gui.py) in VS Code and click **Run Python File**.
+You can also run the GUI launcher cell in [main.ipynb](./main.ipynb), which uses the notebook kernel's exact interpreter.
+
+## GUI usage
 
 ### GUI fields
 
@@ -56,7 +55,9 @@ zoom
 discord
 ```
 
-The app searches for matching processes and prioritizes the process most likely to own the application's audio service.
+Chrome creates many processes, so entering `chrome` is only a search filter. The
+recorder then sorts the matches and puts Chrome's audio service first when it is
+available. You can also select an exact PID in the GUI process picker.
 
 ### Finding a target process name
 
@@ -87,13 +88,50 @@ If the GUI reports that the target was not found:
 3. Remove `.exe` if it is present.
 4. Try the name again while the application is playing audio.
 
-The command-line app can also list matching processes:
+### Choosing the correct Chrome process
+
+Do not choose a Chrome process randomly. Use this workflow:
+
+1. Start playing the audio you want to capture in Chrome.
+2. Open the GUI and enter `chrome` in **Target process**.
+3. Click **Find processes**.
+4. In the process list, prefer the entry whose command line contains:
+
+   ```text
+   audio.mojom.AudioService
+   ```
+
+5. Select that entry. The PID before the process name is the exact process ID
+   that will be captured.
+6. Start recording while the tab is actively producing sound.
+
+The audio-service process is preferred because Chrome separates tabs, GPU work,
+rendering, crash handling, and audio into different processes. The tab's
+visible Chrome window is usually not the process that owns the audio stream.
+
+If no `audio.mojom.AudioService` entry is shown, use the highest-priority
+process listed by the app and test a short recording. A successful recording
+should have nonzero audio and should not produce the app's silent-capture error.
+If it is silent, refresh the process list while audio is playing and try the
+next likely audio-related entry.
+
+The notebook can show all matching PIDs:
 
 ```powershell
 python audio_capture_app.py --target chrome --list-processes
 ```
 
-This is useful when a browser has many helper processes. Prefer the process whose command line contains `audio.mojom.AudioService`.
+In [main.ipynb](./main.ipynb), run the process-inspection cell after the setup
+cell. The returned list is ordered with likely audio owners first. For a
+command-line recording, use the selected PID explicitly:
+
+```powershell
+python audio_capture_app.py --pid <AUDIO_SERVICE_PID> --duration 30
+```
+
+If Chrome has multiple audio-service entries, choose the one that is active
+while the desired tab is playing audio. Process IDs can change after Chrome
+restarts, so repeat this check rather than reusing an old PID.
 
 #### File name
 

@@ -6,7 +6,7 @@
 |---|---|
 | [audio_capture_app.py](./audio_capture_app.py) | Core process selection, audio capture, MOV encoding, and transcription |
 | [audio_capture_gui.py](./audio_capture_gui.py) | Tkinter user interface that controls the core capture functions |
-| [main.ipynb](./main.ipynb) | Notebook entry point for calling the core recorder |
+| [main.ipynb](./main.ipynb) | Primary conda/Jupyter entry point and GUI launcher |
 | [requirements.txt](./requirements.txt) | Python dependencies |
 | `audios\` | Default `.mov` output folder |
 | `transcripts\` | Default transcript output folder |
@@ -90,6 +90,14 @@ re.split(r"(?<=\.)\s+", text)
 This is intentionally simple and does not split on question marks or exclamation marks.
 
 ## GUI architecture
+
+### Jupyter and conda entry point
+
+The notebook is intended to be the normal user-facing launch path. It installs
+`requirements.txt` into the active conda kernel, adds the project directory to
+`sys.path`, and starts the GUI with `sys.executable`. This guarantees that the
+GUI uses the same Python 3.14.6 interpreter selected by Jupyter. The GUI still
+runs as a separate Tkinter process so the notebook kernel remains responsive.
 
 `AudioCaptureGUI` is a Tkinter controller around the core application.
 

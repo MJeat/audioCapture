@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
 import re
 import threading
 import time
@@ -15,6 +17,7 @@ from audio_capture_app import (
     TRANSCRIPT_DIR,
     MovAudioWriter,
     find_process_ids,
+    list_matching_processes,
     transcribe_audio,
 )
 
@@ -29,13 +32,15 @@ class AudioCaptureGUI:
         self.root = root
         self.root.title("Audio Capture")
         self.root.resizable(False, False)
+        self.settings_path = Path(__file__).resolve().with_name("audio_capture_settings.json")
 
-        self.target_var = tk.StringVar(value="chrome")
+        settings = self._load_settings()
+        self.target_var = tk.StringVar(value=settings.get("target", "chrome"))
         self.name_var = tk.StringVar(value=f"capture_{dt.datetime.now():%Y%m%d_%H%M%S}")
-        self.model_var = tk.StringVar(value="tiny")
-        self.record_key_var = tk.StringVar(value="1")
-        self.pause_key_var = tk.StringVar(value="2")
-        self.stop_key_var = tk.StringVar(value="3")
+        self.model_var = tk.StringVar(value=settings.get("model", "tiny"))
+        self.record_key_var = tk.StringVar(value=settings.get("record_key", "1"))
+        self.pause_key_var = tk.StringVar(value=settings.get("pause_key", "2"))
+        self.stop_key_var = tk.StringVar(value=settings.get("stop_key", "3"))
         self.status_var = tk.StringVar(value="Ready")
 
         self.capture: ProcessAudioCapture | None = None
@@ -52,15 +57,36 @@ class AudioCaptureGUI:
         self.paused_at = 0.0
         self.paused_total = 0.0
         self.timer_job: str | None = None
+        self.level_job: str | None = None
         self.bound_sequences: set[str] = set()
         self.status_frame: ttk.Frame
         self.status_label: ttk.Label
+        self.processes: list[tuple[int, str, str]] = []
 
         self._build_widgets()
         self._bind_hotkeys()
         self._apply_theme()
         self.root.bind_all("<Button-1>", self._focus_clicked_widget, add="+")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+
+    def _load_settings(self) -> dict[str, str]:
+        try:
+            return json.loads(self.settings_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def _save_settings(self) -> None:
+        values = {
+            "target": self.target_var.get(),
+            "model": self.model_var.get(),
+            "record_key": self.record_key_var.get(),
+            "pause_key": self.pause_key_var.get(),
+            "stop_key": self.stop_key_var.get(),
+        }
+        try:
+            self.settings_path.write_text(json.dumps(values, indent=2), encoding="utf-8")
+        except OSError:
+            pass
 
     def _apply_theme(self) -> None:
         style = ttk.Style(self.root)
@@ -97,12 +123,14 @@ class AudioCaptureGUI:
         for sequence in self.bound_sequences:
             self.root.unbind_all(sequence)
         self.bound_sequences.clear()
+        keys = [self.record_key_var.get().strip(), self.pause_key_var.get().strip(), self.stop_key_var.get().strip()]
+        valid = all(len(key) == 1 for key in keys) and len(set(keys)) == 3
         for key, callback in (
             (self.record_key_var.get(), self.start),
             (self.pause_key_var.get(), self.toggle_pause),
             (self.stop_key_var.get(), self.stop),
         ):
-            if key.strip():
+            if valid and key.strip():
                 sequence = f"<KeyPress-{key.strip()}>"
                 try:
                     self.root.bind_all(
@@ -115,6 +143,12 @@ class AudioCaptureGUI:
             self.record_button.configure(text=f"Record  [{self.record_key_var.get()}]")
             self.pause_button.configure(text=f"Pause  [{self.pause_key_var.get()}]")
             self.stop_button.configure(text=f"Stop  [{self.stop_key_var.get()}]")
+        if hasattr(self, "shortcut_hint"):
+            self.shortcut_hint.configure(
+                text="" if valid else "Shortcuts must be three different single keys.",
+                foreground="#ffb8bd" if not valid else "#aebdca",
+            )
+        self._save_settings()
 
     def _focus_clicked_widget(self, event: tk.Event[tk.Misc]) -> None:
         widget = event.widget
@@ -148,9 +182,10 @@ class AudioCaptureGUI:
             row=1, column=0, columnspan=3, pady=(0, 12)
         )
         ttk.Label(frame, text="Target process").grid(row=2, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.target_var, style="Input.TEntry", width=32).grid(
-            row=2, column=1, columnspan=2, sticky="ew", pady=4
+        ttk.Entry(frame, textvariable=self.target_var, style="Input.TEntry", width=25).grid(
+            row=2, column=1, sticky="ew", pady=4
         )
+        ttk.Button(frame, text="Refresh", command=self.refresh_processes).grid(row=2, column=2, padx=(4, 0))
         ttk.Label(frame, text="File name").grid(row=3, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=self.name_var, style="Input.TEntry", width=32).grid(
             row=3, column=1, columnspan=2, sticky="ew", pady=4
@@ -180,6 +215,12 @@ class AudioCaptureGUI:
             )
             entry.grid(row=1, column=column, padx=2)
             entry.bind("<KeyRelease>", lambda _event: self._refresh_hotkeys())
+        self.shortcut_hint = ttk.Label(shortcut_frame, text="")
+        self.shortcut_hint.grid(row=2, column=0, columnspan=3)
+        ttk.Label(frame, text="Exact process").grid(row=6, column=0, sticky="nw", pady=4)
+        self.process_list = tk.Listbox(frame, height=4, width=55, exportselection=False)
+        self.process_list.grid(row=6, column=1, columnspan=2, sticky="ew", pady=4)
+        self.process_list.bind("<<ListboxSelect>>", self._process_selected)
         buttons = ttk.Frame(frame)
         buttons.grid(row=7, column=0, columnspan=3, pady=(12, 6))
         self.record_button = ttk.Button(
@@ -203,9 +244,59 @@ class AudioCaptureGUI:
             wraplength=500,
         )
         self.status_label.grid(row=0, column=0, sticky="w")
+        self.level_bar = ttk.Progressbar(frame, orient="horizontal", length=430, maximum=1.0)
+        self.level_bar.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.level_label = ttk.Label(frame, text="Audio level: 0%")
+        self.level_label.grid(row=10, column=0, columnspan=3)
+        output_buttons = ttk.Frame(frame)
+        output_buttons.grid(row=11, column=0, columnspan=3, pady=(6, 0))
+        self.open_audio_button = ttk.Button(output_buttons, text="Open audio", command=self.open_audio, state="disabled")
+        self.open_audio_button.grid(row=0, column=0, padx=4)
+        self.open_transcript_button = ttk.Button(output_buttons, text="Open transcript", command=self.open_transcript, state="disabled")
+        self.open_transcript_button.grid(row=0, column=1, padx=4)
+        self.refresh_processes()
 
     def _model_selected(self, _event: object) -> None:
         self.show_status(f"Selected Whisper model: {self.model_var.get()}")
+        self._save_settings()
+
+    def refresh_processes(self) -> None:
+        self.processes = list_matching_processes(self.target_var.get().strip())
+        self.process_list.delete(0, tk.END)
+        for pid, name, command_line in self.processes:
+            label = f"{pid}  {name}"
+            if command_line:
+                label += f"  ({command_line[:70]})"
+            self.process_list.insert(tk.END, label)
+        if self.processes:
+            self.process_list.selection_set(0)
+
+    def _process_selected(self, _event: object) -> None:
+        selection = self.process_list.curselection()
+        if selection:
+            self.show_status(f"Selected PID {self.processes[selection[0]][0]}")
+
+    def _selected_pid(self) -> int | None:
+        selection = self.process_list.curselection()
+        return self.processes[selection[0]][0] if selection else None
+
+    def _update_level(self) -> None:
+        writer = self.writer
+        level = min(1.0, writer.current_level * 3.0) if writer else 0.0
+        if hasattr(self, "level_bar"):
+            self.level_bar["value"] = level
+            self.level_label.configure(text=f"Audio level: {level * 100:.0f}%")
+        self.level_job = self.root.after(100, self._update_level)
+
+    def _open_path(self, path: Path | None) -> None:
+        if path is not None and path.exists():
+            os.startfile(str(path))
+
+    def open_audio(self) -> None:
+        self._open_path(self.audio_path)
+
+    def open_transcript(self) -> None:
+        self._open_path(self.transcript_path)
 
     def show_status(self, message: str) -> None:
         self.status_frame.configure(style="Saved.TFrame")
@@ -239,7 +330,9 @@ class AudioCaptureGUI:
                 "Record, Pause, and Stop shortcuts must each be different single keys."
             )
             return
-        process_ids = find_process_ids(target)
+        self.refresh_processes()
+        selected_pid = self._selected_pid()
+        process_ids = [selected_pid] if selected_pid is not None else find_process_ids(target)
         if not process_ids:
             self.show_error(
                 f"Target process '{target}' was not found. Start the app and verify "
@@ -277,6 +370,7 @@ class AudioCaptureGUI:
         self.paused_at = 0.0
         self.paused_total = 0.0
         self._update_timer()
+        self._update_level()
 
         try:
             self.capture = ProcessAudioCapture(process_ids[0], on_data=self.on_audio)
@@ -344,9 +438,15 @@ class AudioCaptureGUI:
                 raise RuntimeError("Capture was not initialized.")
             if writer.frames_written == 0 or writer.peak_level == 0:
                 raise RuntimeError("No audible audio was captured.")
-            transcribe_audio(audio_path, transcript_path, self.selected_model)
+            transcribe_audio(
+                audio_path,
+                transcript_path,
+                self.selected_model,
+                progress=lambda message: self.root.after(0, self.show_status, message),
+            )
         except Exception as error:
-            self.root.after(0, lambda: self.show_error(f"Capture failed: {error}"))
+            message = str(error)
+            self.root.after(0, lambda: self.show_error(f"Capture failed: {message}"))
         else:
             self.root.after(
                 0,
@@ -355,6 +455,7 @@ class AudioCaptureGUI:
                     f"The Transcript is saved:\n{transcript_path}"
                 ),
             )
+            self.root.after(0, self.enable_output_buttons)
         finally:
             with self.capture_lock:
                 self.capture = None
@@ -369,12 +470,20 @@ class AudioCaptureGUI:
         if self.timer_job is not None:
             self.root.after_cancel(self.timer_job)
             self.timer_job = None
+        if self.level_job is not None:
+            self.root.after_cancel(self.level_job)
+            self.level_job = None
+
+    def enable_output_buttons(self) -> None:
+        self.open_audio_button.configure(state="normal")
+        self.open_transcript_button.configure(state="normal")
 
     def close(self) -> None:
         if self.capture is not None:
             self.stop()
             self.root.after(200, self.close)
             return
+        self._save_settings()
         self.root.destroy()
 
 

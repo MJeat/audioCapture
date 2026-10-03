@@ -1,0 +1,7 @@
+{
+  "target": "chrome",
+  "model": "tiny",
+  "record_key": "1",
+  "pause_key": "2",
+  "stop_key": "3"
+}

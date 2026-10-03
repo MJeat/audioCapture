@@ -9,12 +9,14 @@ import time
 import warnings
 from pathlib import Path
 from threading import Event, Lock
-from typing import Optional
+from typing import Callable, Optional
+from math import gcd
 
 import av
 import numpy as np
 import psutil
 from proctap import ProcessAudioCapture
+from scipy.signal import resample_poly
 
 
 SAMPLE_RATE = 48_000
@@ -39,26 +41,43 @@ warnings.filterwarnings(
 )
 
 
-def find_process_ids(search_text: str) -> list[int]:
+def list_matching_processes(search_text: str) -> list[tuple[int, str, str]]:
     """Return matching processes, prioritizing processes that own audio output."""
     needle = search_text.casefold()
-    matches: list[tuple[int, str]] = []
+    matches: list[tuple[int, str, str]] = []
     for process in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             name = (process.info["name"] or "").casefold()
             command_line = " ".join(process.info["cmdline"] or []).casefold()
             if needle in name or needle in command_line:
-                matches.append((int(process.info["pid"]), command_line))
+                matches.append((int(process.info["pid"]), process.info["name"] or "", command_line))
         except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
             continue
     matches.sort(
         key=lambda item: (
-            "audio.mojom.audioservice" not in item[1],
-            "--type=renderer" in item[1],
-            "--type=crashpad-handler" in item[1],
+            "audio.mojom.audioservice" not in item[2],
+            "--type=renderer" in item[2],
+            "--type=crashpad-handler" in item[2],
         )
     )
-    return [pid for pid, _ in matches]
+    return matches
+
+
+def find_process_ids(search_text: str) -> list[int]:
+    """Return matching process IDs, prioritizing likely audio owners."""
+    return [pid for pid, _, _ in list_matching_processes(search_text)]
+
+
+def resample_to_16khz(audio: np.ndarray, source_rate: int) -> np.ndarray:
+    """Convert mono floating point audio to the exact 16 kHz Whisper rate."""
+    if source_rate <= 0:
+        raise ValueError("source_rate must be positive")
+    if source_rate == 16_000:
+        return audio.astype(np.float32, copy=False)
+    factor = gcd(int(source_rate), 16_000)
+    return resample_poly(audio, up=16_000 // factor, down=source_rate // factor).astype(
+        np.float32
+    )
 
 
 class MovAudioWriter:
@@ -73,6 +92,7 @@ class MovAudioWriter:
         self._closed = False
         self.frames_written = 0
         self.peak_level = 0.0
+        self.current_level = 0.0
 
     def write(self, pcm_bytes: bytes, frame_count: int) -> None:
         del frame_count  # The byte payload is the authoritative chunk size.
@@ -85,6 +105,7 @@ class MovAudioWriter:
                 f"by {CHANNELS} channels."
             )
         self.peak_level = max(self.peak_level, float(np.max(np.abs(samples))))
+        self.current_level = float(np.sqrt(np.mean(samples * samples)))
         clipped = np.clip(samples, -1.0, 1.0)
         packed = np.rint(clipped * np.iinfo(np.int16).max).astype(np.int16)
         with self._lock:
@@ -111,7 +132,12 @@ class MovAudioWriter:
             self._closed = True
 
 
-def transcribe_audio(audio_path: Path, transcript_path: Path, model_name: str) -> None:
+def transcribe_audio(
+    audio_path: Path,
+    transcript_path: Path,
+    model_name: str,
+    progress: Optional[Callable[[str], None]] = None,
+) -> None:
     """Transcribe the MOV locally with faster-whisper."""
     try:
         from faster_whisper import WhisperModel
@@ -136,9 +162,12 @@ def transcribe_audio(audio_path: Path, transcript_path: Path, model_name: str) -
         transcript_path.write_text("No audio frames were captured.\n", encoding="utf-8")
         return
 
-    audio = np.concatenate(chunks)
-    audio = audio[::3]  # 48 kHz -> 16 kHz, the format expected by Whisper.
+    audio = resample_to_16khz(np.concatenate(chunks), int(stream.sample_rate or SAMPLE_RATE))
+    if progress:
+        progress("Loading Whisper model...")
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    if progress:
+        progress("Transcribing speech...")
     segments, info = model.transcribe(audio, vad_filter=True)
     lines = [f"Language: {info.language}", ""]
     text = " ".join(segment.text.strip() for segment in segments).strip()
