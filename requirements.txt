@@ -1,0 +1,5 @@
+av>=16.0
+numpy>=2.0
+proc-tap>=1.1
+psutil>=7.0
+faster-whisper>=1.1

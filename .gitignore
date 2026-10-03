@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# Generated recordings and transcripts
+audios/*
+transcripts/*
+!audios/.gitkeep
+!transcripts/.gitkeep
+
+# Local Whisper/model caches
+.cache/
+models/
+*.bin
+*.safetensors
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+Thumbs.db
+Desktop.ini
